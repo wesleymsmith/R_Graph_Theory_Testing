@@ -1,4 +1,5 @@
 library(igraph)
+library(Matrix)
 Rcpp::sourceCpp('/Users/wesleybotello-smith/Documents/R_Graph_Theory_Testing/Rcpp_PriorityQueue_Ball_Grow.cpp')
 
 genMeshCoord3D <- function(dimVec,offset) {
