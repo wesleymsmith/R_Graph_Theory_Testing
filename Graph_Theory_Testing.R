@@ -353,12 +353,14 @@ unorderedSublistMap <- function(l1,l2,wanings=TRUE) {
   return(lmap)
 }
 
-constructPath <- function(x0,t,vPar) {
+constructPath <- function(x0,t,vPar,maxLen=1000) {
   path=c(t)
   tempv=t
-  while (tempv != x0) {
+  it=0
+  while (tempv != x0 && it < maxLen) {
     tempv=vPar[tempv]
     path=append(path,tempv)
+    it=it+1
   }
   return(path)
 }
@@ -767,12 +769,19 @@ getSubgraphEdgeIds <- function(G,S) {
   sEmatchList[2*(1:length(E(S)))]<-sElist[,2]
   return(get.edge.ids(G,sEmatchList))
 }
-genBallTree <- function(G,Gdata=list(),rv) {
+genBallTree <- function(G,Gdata=list(),rv,directed=NULL) {
   if (length(Gdata) < 1) {
     Gdata <- extractGraphData(G,rv=rv)
   }
   gTree<-distMapToTree(Gdata$ball[1,]+1,Gdata$par)
   V(gTree)$id <- V(G)$id
+  if (!is.null(directed)) {
+    if (directed == TRUE) {
+      gTree <- as.directed(gTree)
+    } else {
+      gTree <- as.undirected(gTree)
+    }
+  }
   E(gTree)$id <- getSubgraphEdgeIds(G,gTree)
   return(gTree)
 }
@@ -972,21 +981,55 @@ tccgSol <- function(A,Atree,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,f=1,
   return(x)
 }
 
-calcOffTreeProbs <- function(Gdata,Gtreedata,offTreeInds) {
-  pathingSources <- unique(Gdata[,3])
+fastTreeDist <- function(vert1,vert2,root,par,distMap) {
+  path1 = findTreePath(vert1-1,root-1,par-1,length(par))+1
+  path2 = findTreePath(vert2-1,root-1,par-1,length(par))+1
+  matchVert=path1[which(!(match(path1,path2,nomatch=0)%in%0))[1]]
+  return(distMap[vert1]+distMap[vert2]-2*distMap[matchVert])
 }
-buildGraphConditioners <- function(G,Gtree,rv) {
-  Gdata <- extractGraphData(G,root=rv)
-  Gtreedata <- extractGraphData(Gtree,root=rv)
-  GtreeEdata <- t(rbind(get.edgelist(Gtree)),E(Gtree)$weight)
+
+buildGraphConditioners <- function(G,Gtree=NULL,rv,Gdata=list(),
+                                   Gtreedata=list()) {
+  if (is.null(Gdata$par) || is.null(Gdata.ball)
+      || is.null(Gdata.dist) || is.null(Gdata.Edata) ||
+        !(is.directed(G))) {
+    if (!is.directed(G)) {
+      G<-as.directed(G)
+      E(G)$id <- 1:length(E(G))
+    }
+    Gdata <- extractGraphData(G,rv=rv) 
+  }
+  if (is.null(Gtree)) {
+    #Special tree building routines can go here for now, just
+    #using the search / ball grow tree method
+    Gtree = genBallTree(G,Gdata,rv,directed=TRUE)
+    E(Gtree)$weight <- E(G)$weight[E(Gtree)$id]
+  }
+  if (is.null(E(Gtree)$weight)) {
+    E(Gtree)$weight <- E(G)$weight[E(Gtree)$id]
+  }
+  GtreeEdata <- t(rbind(t(get.edgelist(Gtree))),E(Gtree)$weight) 
+  if (is.null(Gtreedata$par) || is.null(Gtreedata.ball)
+      || is.null(Gtreedata.dist) || is.null(Gtreedata.Edata) ) {
+    Gtreedata <- extractGraphData(as.directed(Gtree),rv=rv) 
+  }
   offTreeEdgeInds = which(!(E(G)$id %in% E(Gtree)$id))
+  offTreeDists = mapply(fastTreeDist, Gdata$Edata[offTreeEdgeInds,1], 
+                            Gdata$Edata[offTreeEdgeInds,2],
+                            MoreArgs=list(root=rv,par=Gtreedata$par,
+                                               distMap=Gdata$dist))
   offTreeEdgeData = Gdata$Edata[offTreeEdgeInds,]
   Plist=c()
   GtreeLap <- edgeDataToLap(GtreeEdata,V(Gtree)$weight)
   Plist[[1]] = GtreeLap;
-  probList<-calcOffTreeProbs(Gdata,Gtreedata,offTreeEdgeInds)
+  probNorm = sum(E(G)$weight[offTreeEdgeInds] / offTreeDists)
+  offEdgeProbs = E(G)$weight[offTreeEdgeInds] / offTreeDists / probNorm
   logN = floor(log(length(V(G))))
-  for (ii in 1:logN) {
+  Mdiff = length(offTreeDists)
+  if (logN > 1) {
+    for (ii in 1:logN) {
+      
+    } 
   }
 }
 

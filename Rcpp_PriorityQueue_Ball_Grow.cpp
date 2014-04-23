@@ -2,6 +2,7 @@
 #include <queue>
 using namespace Rcpp;
 
+
 // Below is a simple example of exporting a C++ function to R. You can
 // source this function into an R session using the Rcpp::sourceCpp 
 // function (or via the Source button on the editor toolbar)
@@ -364,4 +365,85 @@ void numMatTester(NumericMatrix mat) {
      Rprintf("%f ",mat(ii,jj));
    }
   }
+}
+
+//NumericMatrix calcOffEdgeProbs(NumericMatrix offEdges, NumericMatrix gEdata, 
+//                NumericMatrix treeEdata, NumericMatrix treeBalldata  )
+
+//Finds the path from vector v to the root of a tree given by par.
+//assumes starting index of zero (note: R uses 1 as starting index!)
+//[[Rcpp::export]]
+IntegerVector findTreePath(int v,int root,IntegerVector par,int maxLen=1000) {
+  std::vector<int> path;
+  int it = 0;
+
+  path.push_back(v);
+  try {
+    while (v != root) {
+      v = par[v];
+      path.push_back(v);
+      if (it++ > maxLen) {
+        throw std::range_error("max path length reached before root found!");
+      }
+    }
+    return Rcpp::as<IntegerVector>(wrap(path));
+  } catch (std::exception &ex) {
+    forward_exception_to_r(ex);
+  } catch (...) {
+    ::Rf_error("max path length reached before finding root.");
+  }
+}
+
+//[[Rcpp::export]]
+NumericVector getOffTreeProbs(NumericMatrix gEdgeData, NumericMatrix treeEdgeData,
+  NumericVector offTreeIndexList, IntegerVector par, int root, bool isOrdered=true) {
+
+  std::vector<double> outArray;
+  std::vector<int> sourcePath;
+  std::vector<int> targetPath;
+  std::vector<int>::iterator srcIt, trgIt;
+  int source, target, vert, sVert, tVert, len;
+  
+  //outArray 
+  outArray.reserve(offTreeIndexList.size());
+  if ( offTreeIndexList.size() > 0) {
+    source = offTreeIndexList(1);
+    len = par.size();
+    sVert = gEdgeData(source,1);
+    sourcePath = as< std::vector<int> >(findTreePath(sVert, root, par,len));
+    for(int ii=1; ii<offTreeIndexList.size(); ii++) {
+      if (source != offTreeIndexList(ii) ) {
+        source = offTreeIndexList[ii];
+        len = par.size();
+        sVert = gEdgeData(source,1);
+        sourcePath = as< std::vector<int> >(findTreePath(sVert,root,par,len));        
+      }
+      target = offTreeIndexList(ii);
+      len = par.size();
+      targetPath = as< std::vector<int> >(findTreePath(gEdgeData(target,2),root,par,len));
+      srcIt = find_first_of(sourcePath.begin(),sourcePath.end(),
+                targetPath.begin(),targetPath.end());
+      if (srcIt != sourcePath.end()) {
+        vert = *srcIt;
+        trgIt = find(targetPath.begin(),targetPath.end(), vert); 
+      } else {
+        outArray.push_back(0);
+      }
+    }
+  }
+  return Rcpp::as<NumericVector>(wrap(outArray));
+}
+
+//[[Rcpp::export]]
+NumericVector indexingTest(NumericVector stack1, NumericVector stack2) {
+  NumericVector outList;
+  std::vector<double>::iterator stack1It, stack2It;
+  std::vector<double> stackA, stackB;
+  
+  stackA = as< std::vector<double> >(stack1);
+  stackB = as< std::vector<double> >(stack2);
+  stack1It = find_first_of(stackA.begin(),stackA.end(),stackB.begin(),stackB.end());
+  stack2It = find(stackB.begin(),stackB.end(),*stack1It);
+  outList.push_back(*stack2It); outList.push_back(*stack2It);
+  return outList;
 }
