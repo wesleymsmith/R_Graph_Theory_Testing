@@ -1,6 +1,8 @@
-library(igraph)
-library(Matrix)
-Rcpp::sourceCpp('/Users/wesleybotello-smith/Documents/R_Graph_Theory_Testing/Rcpp_PriorityQueue_Ball_Grow.cpp')
+require(igraph)
+require(Matrix)
+require(plyr)
+require(data.table)
+Rcpp::sourceCpp('./Rcpp_PriorityQueue_Ball_Grow.cpp')
 
 genMeshCoord3D <- function(dimVec,offset) {
 out <- matrix(data=0,nrow=dimVec[1]*dimVec[2]*dimVec[3],ncol=3)
@@ -437,7 +439,7 @@ calcSubgraphSurfaceWeight <- function(G,S,gEweights) {
 edgeDataToLap <- function(Edata,Vweights=c()) {
   outmat = sparseMatrix(i=Edata[,1],j=Edata[,2],x=-Edata[,3])
   vWeighted = FALSE
-  if (length(Vweights) == dim(outmat)[1]) vWeighted = TRUE
+  if (!is.null(Vweights) && length(Vweights) == dim(outmat)[1]) vWeighted = TRUE
   for (i in 1:(dim(outmat)[1])) {
     outmat[i,i] = -sum(outmat[i,])
     if (vWeighted) outmat[i,i] = outmat[i,i] + Vweights[i]
@@ -988,7 +990,7 @@ fastTreeDist <- function(vert1,vert2,root,par,distMap) {
   return(distMap[vert1]+distMap[vert2]-2*distMap[matchVert])
 }
 
-buildGraphConditioners <- function(G,Gtree=NULL,rv,Gdata=list(),
+buildGraphConditioners <- function(G,rv,Gtree=NULL,Gdata=list(),
                                    Gtreedata=list()) {
   if (is.null(Gdata$par) || is.null(Gdata.ball)
       || is.null(Gdata.dist) || is.null(Gdata.Edata) ||
@@ -1008,29 +1010,82 @@ buildGraphConditioners <- function(G,Gtree=NULL,rv,Gdata=list(),
   if (is.null(E(Gtree)$weight)) {
     E(Gtree)$weight <- E(G)$weight[E(Gtree)$id]
   }
-  GtreeEdata <- t(rbind(t(get.edgelist(Gtree))),E(Gtree)$weight) 
+  GtreeEdata <- t(rbind(t(get.edgelist(Gtree)),E(Gtree)$weight))
   if (is.null(Gtreedata$par) || is.null(Gtreedata.ball)
       || is.null(Gtreedata.dist) || is.null(Gtreedata.Edata) ) {
     Gtreedata <- extractGraphData(as.directed(Gtree),rv=rv) 
   }
   offTreeEdgeInds = which(!(E(G)$id %in% E(Gtree)$id))
   offTreeDists = mapply(fastTreeDist, Gdata$Edata[offTreeEdgeInds,1], 
-                            Gdata$Edata[offTreeEdgeInds,2],
+                        Gdata$Edata[offTreeEdgeInds,2],
                             MoreArgs=list(root=rv,par=Gtreedata$par,
                                                distMap=Gdata$dist))
-  offTreeEdgeData = Gdata$Edata[offTreeEdgeInds,]
-  Plist=c()
-  GtreeLap <- edgeDataToLap(GtreeEdata,V(Gtree)$weight)
-  Plist[[1]] = GtreeLap;
   probNorm = sum(E(G)$weight[offTreeEdgeInds] / offTreeDists)
   offEdgeProbs = E(G)$weight[offTreeEdgeInds] / offTreeDists / probNorm
+  indMat = sparseMatrix(i=Gdata$Edata[,1],j=Gdata$Edata[,2],x=1:length(E(G)))
+  Cinds = mapply(function(ii) indMat[Gdata$Edata[ii,2],Gdata$Edata[ii,1]],
+                 offTreeEdgeInds)
+  offTreeData = as.data.table(list(Einds=offTreeEdgeInds,
+                        Cinds=Cinds,
+                        Dinds=Gdata$Edata[offTreeEdgeInds,1],
+                        probs = offEdgeProbs,
+                       counts=0*offTreeEdgeInds))
+  offDiagData = as.data.table(list(Dinds=unique(Gdata$Edata[offTreeEdgeInds,1]),
+                                    counts=0*unique(Gdata$Edata[offTreeEdgeInds,1])))
+  setkey(offTreeData,Einds)
+  setkey(offDiagData,Dinds)
+  diagInds = t(rbind(offDiagData$Dinds,offDiagData$Dinds))
+  offInds = Gdata$Edata[offTreeData$Einds,1:2]
+  Plist=list()
+  Plist[[1]] <- edgeDataToLap(GtreeEdata,V(Gtree)$weight)
+  treeLap <- edgeDataToLap(Gtreedata$Edata,V(Gtree)$weight)
+  tempPbase <- edgeDataToLap(Gdata$Edata,V(G)$weight)
+  tempPbase[Gdata$Edata[offTreeEdgeInds,1:2]] = 0
+  tempPbase[Gtreedata$Edata[,1:2]] = treeLap[Gtreedata$Edata[,1:2]]
+  diag(tempPbase) <- diag(treeLap)
+  tempP=tempPbase
   logN = floor(log(length(V(G))))
+  eM = length(E(G))
   Mdiff = length(offTreeDists)
   if (logN > 1) {
-    for (ii in 1:logN) {
-      
-    } 
+    #for (ii in 1:(logN^2)) {
+      tempP = tempPbase * logN
+      addCounts = count(sample(offTreeData$Einds,size = eM/logN^2,replace=TRUE,
+                        prob=offTreeData$probs))
+      offTreeData[Einds %in% addCounts$x]$counts = offTreeData[Einds %in% addCounts$x]$counts +
+                                            addCounts$freq
+      offTreeData$counts = offTreeData$counts + 
+              offTreeData$counts[match(offTreeData$Cinds,offTreeData$Einds)]
+      diagCounts = aggregate(offTreeData$counts,by=list(Dinds=offTreeData$Dinds),sum)
+      offDiagData[Dinds %in% diagCounts$Dinds]$counts = offDiagData[Dinds %in% diagCounts$Dinds]$counts +
+          diagCounts$x
+      tempP[offInds] = tempP[offInds] - offTreeData$counts * 
+          Gdata$Edata[offTreeData$Einds,3]
+      tempP[diagInds] = (tempP[diagInds] +
+          offDiagData$counts * Gdata$Edata[offDiagData$Dinds,3])
+    #} 
   }
+  return(list(mat=tempP,tlap=treeLap,offInds=offInds,
+              diagInds=diagInds,offData=offTreeData,diagData=offDiagData,
+              Esample=addCounts))
+}
+
+graphDataToConditioners <- function(Gdata) {
+  Alap <- edgeDataToLap(Gdata$Edata)
+  treeEdata <- rbind(c((Gdata$ball[1,]+1)[-1],(Gdata$ball[3,]+1)[-1]),
+                     c((Gdata$ball[3,]+1)[-1],(Gdata$ball[1,]+1)[-1]) )
+  treeEdata <- t(rbind(treeEdata,-Alap[t(treeEdata)]))
+  Atree <- edgeDataToLap(treeEdata)
+  offEdgeData <- subset(subset(summary(Alap-Atree),i!=j),x!=0)
+  Adata <- subset(summary(Alap),i!=j)
+  Adata$id <- 1:nrow(Adata)
+  EidMat <- sparseMatrix(i=Adata$i,j=Adata$j,x=Adata$id)
+  offEdgeData$id <- mapply(function(i,j) EidMat[i,j],offEdgeData$i,offEdgeData$j)
+  offEdgeData$cid <- mapply(function(i,j) EidMat[j,i],offEdgeData$i,offEdgeData$j)
+  offEdgeData$tdists <- mapply(fastTreeDist, offEdgeData$i, offEdgeData$j,
+                        MoreArgs=list(root=Gdata$ball[1,1]+1,par=Gdata$par,
+                                      distMap=Gdata$dist))
+  return(list(offEdgeData=offEdgeData,Adata=Adata))
 }
 
 hccgSol <- function(A,Atree,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,f=1,
