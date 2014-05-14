@@ -1,6 +1,7 @@
 require(igraph)
 require(Matrix)
 require(plyr)
+require(MASS)
 require(data.table)
 Rcpp::sourceCpp('./Rcpp_PriorityQueue_Ball_Grow.cpp')
 
@@ -1077,15 +1078,51 @@ graphDataToConditioners <- function(Gdata) {
   treeEdata <- t(rbind(treeEdata,-Alap[t(treeEdata)]))
   Atree <- edgeDataToLap(treeEdata)
   offEdgeData <- subset(subset(summary(Alap-Atree),i!=j),x!=0)
-  Adata <- subset(summary(Alap),i!=j)
+  #Adata <- subset(summary(Alap),i!=j)
+  Adata <- summary(Alap)
   Adata$id <- 1:nrow(Adata)
   EidMat <- sparseMatrix(i=Adata$i,j=Adata$j,x=Adata$id)
+  #Adata$did <- mapply(function(i) EidMat[i,i],Adata$i)
   offEdgeData$id <- mapply(function(i,j) EidMat[i,j],offEdgeData$i,offEdgeData$j)
-  offEdgeData$cid <- mapply(function(i,j) EidMat[j,i],offEdgeData$i,offEdgeData$j)
+  #Adata$cid <- mapply(function(i,j) EidMat[j,i],Adata$i,Adata$j)
   offEdgeData$tdists <- mapply(fastTreeDist, offEdgeData$i, offEdgeData$j,
                         MoreArgs=list(root=Gdata$ball[1,1]+1,par=Gdata$par,
                                       distMap=Gdata$dist))
-  return(list(offEdgeData=offEdgeData,Adata=Adata))
+  probNorm <- sum(-1 * offEdgeData$x / offEdgeData$tdists)
+  offEdgeData$prob <- 1 / offEdgeData$tdists / probNorm
+  loffEdges<-subset(offEdgeData,i>j)
+  #sampling portion
+  matList <- list();
+  LogN <- floor(log(length(diag(Alap))))
+  baseMat<- Alap * 0 + Atree
+  Adata[,5]<- 0
+  matList[[1]] <- baseMat
+  for (ii in 1:LogN){
+    idSample<-count(sample(x=loffEdges$id,prob=loffEdges$prob,replace=TRUE,size=LogN))
+    Adata[,ii+5] <- Adata[,ii+4]
+    Adata[idSample$x,ii+5] <- Adata[idSample$x,ii+5] + idSample$freq * Adata$x[idSample$x]
+    cids<-EidMat[t(rbind(Adata[idSample$x,"j"],Adata[idSample$x,"i"]))]
+    Adata[cids,ii+5]<-Adata[idSample$x,ii+5]
+    dcounts <- count(data.frame(i=Adata$i[c(idSample$x,cids)]
+                                ,c=Adata[c(idSample$x,cids),ii+5]),vars="i",wt_var="c")
+    Adata[EidMat[t(rbind(dcounts$i,dcounts$i))],ii+5] <- -1*dcounts$freq
+    #ivec=c(Adata$i[idSample$x],Adata$j[idSample$x])
+    #jvec=c(Adata$j[idSample$x],Adata$i[idSample$x])
+    #cvec=c(idSample$freq,idSample$freq)*Adata$x[idSample$x]
+    #diagCounts=count(data.frame(i=ivec,j=jvec,c=cvec),vars="i",wt_var="c")
+    tempMat<- baseMat * LogN * ii
+    tempMat[t(rbind(Adata$i,Adata$j))] = tempMat[t(rbind(Adata$i,Adata$j))] + Adata[,ii+5]
+    #tempMat[t(rbind(diagCounts$i,diagCounts$i))] = tempMat[t(rbind(diagCounts$i,diagCounts$i))] -
+    #  diagCounts$freq
+    matList[[ii+1]] = tempMat
+  }
+  matList[[LogN+1]] = baseMat*LogN^2 + Alap
+  cList <- list()
+  lList <- list()
+  pList <- list()
+  return(list(offEdgeData=offEdgeData,Adata=Adata,
+              #counts=data.frame(i=ivec,j=jvec,c=cvec),dcounts=diagCounts,
+              matList=matList,idMat=EidMat))
 }
 
 hccgSol <- function(A,Atree,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,f=1,
