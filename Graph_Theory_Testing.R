@@ -1071,6 +1071,45 @@ buildGraphConditioners <- function(G,rv,Gtree=NULL,Gdata=list(),
               Esample=addCounts))
 }
 
+spannerListPvec <- function(matList) {
+  len = length(matList)
+  size = dim(matList[[1]])[1]
+  cVecList <- lapply(matList,function(mat) rowNZcountVec(mat))
+  mInd <- 1
+  pVec<-order(cVecList[[len]])
+  matchVec <- rep(1,len)
+  for (i in (len-1):1) {
+    tempVec <- cVecList[[i]][pVec]
+    tempVec <- tempVec[mInd:size]
+    toVec<-order(tempVec)
+    pVec[mInd:size] <- pVec[mInd:size][toVec]
+    mVal <- match(TRUE,(4 <= tempVec[toVec]),nomatch=0)
+    if (mVal == 0) {
+      matchVec[i]<-len
+      mInd<-len
+    } else {
+      mInd<-mInd+mVal-1
+      matchVec[i]<-mInd
+    }
+  }
+  return(list(pVec=pVec,mInds=matchVec))
+}
+decomposeSpanner <- function(mat) {
+  rnzVec <- rowNZcountVec(mat)
+  permVec <- order(rnzVec)
+  dVal <- match(4,rnzVec[permVec],nomatch=0)-1
+  if (dVal > 1) {
+    MP <- as(genSRPmat(permVec,dim(mat)[1],dim(mat)[2]),"dgCMatrix")
+    pmat <- MP%*%mat%*%t(MP)
+    lList <- matLL(pmat,dVal)
+    return(list(P=MP,L=lList$L,C=lList$C,d=dVal))
+  }
+}
+decomposeSpannerList <- function(matList) {
+  len <- length(matList)
+  
+}
+
 graphDataToConditioners <- function(Gdata) {
   Alap <- edgeDataToLap(Gdata$Edata)
   treeEdata <- rbind(c((Gdata$ball[1,]+1)[-1],(Gdata$ball[3,]+1)[-1]),
@@ -1078,13 +1117,10 @@ graphDataToConditioners <- function(Gdata) {
   treeEdata <- t(rbind(treeEdata,-Alap[t(treeEdata)]))
   Atree <- edgeDataToLap(treeEdata)
   offEdgeData <- subset(subset(summary(Alap-Atree),i!=j),x!=0)
-  #Adata <- subset(summary(Alap),i!=j)
   Adata <- summary(Alap)
   Adata$id <- 1:nrow(Adata)
   EidMat <- sparseMatrix(i=Adata$i,j=Adata$j,x=Adata$id)
-  #Adata$did <- mapply(function(i) EidMat[i,i],Adata$i)
   offEdgeData$id <- mapply(function(i,j) EidMat[i,j],offEdgeData$i,offEdgeData$j)
-  #Adata$cid <- mapply(function(i,j) EidMat[j,i],Adata$i,Adata$j)
   offEdgeData$tdists <- mapply(fastTreeDist, offEdgeData$i, offEdgeData$j,
                         MoreArgs=list(root=Gdata$ball[1,1]+1,par=Gdata$par,
                                       distMap=Gdata$dist))
@@ -1096,30 +1132,47 @@ graphDataToConditioners <- function(Gdata) {
   LogN <- floor(log(length(diag(Alap))))
   baseMat<- Alap * 0 + Atree
   Adata[,5]<- 0
-  matList[[1]] <- baseMat
+  matList[[1]] <- baseMat * LogN^3
   for (ii in 1:LogN){
-    idSample<-count(sample(x=loffEdges$id,prob=loffEdges$prob,replace=TRUE,size=LogN))
+    idSample <- count(sample(x=loffEdges$id,prob=loffEdges$prob,replace=TRUE,
+                           size=LogN^2))
     Adata[,ii+5] <- Adata[,ii+4]
-    Adata[idSample$x,ii+5] <- Adata[idSample$x,ii+5] + idSample$freq * Adata$x[idSample$x]
-    cids<-EidMat[t(rbind(Adata[idSample$x,"j"],Adata[idSample$x,"i"]))]
-    Adata[cids,ii+5]<-Adata[idSample$x,ii+5]
-    dcounts <- count(data.frame(i=Adata$i[c(idSample$x,cids)]
-                                ,c=Adata[c(idSample$x,cids),ii+5]),vars="i",wt_var="c")
+    Adata[idSample$x,ii+5] <- Adata[idSample$x,ii+5] + idSample$freq * 
+                              Adata$x[idSample$x]
+    cids <- EidMat[t(rbind(Adata[idSample$x,"j"],Adata[idSample$x,"i"]))]
+    Adata[cids,ii+5] <- Adata[idSample$x,ii+5]
+    dcounts <-  count(data.frame(i=Adata$i[c(idSample$x,cids)],
+                                c=Adata[c(idSample$x,cids),ii+5]
+                                ),vars="i",wt_var="c")
     Adata[EidMat[t(rbind(dcounts$i,dcounts$i))],ii+5] <- -1*dcounts$freq
-    #ivec=c(Adata$i[idSample$x],Adata$j[idSample$x])
-    #jvec=c(Adata$j[idSample$x],Adata$i[idSample$x])
-    #cvec=c(idSample$freq,idSample$freq)*Adata$x[idSample$x]
-    #diagCounts=count(data.frame(i=ivec,j=jvec,c=cvec),vars="i",wt_var="c")
-    tempMat<- baseMat * LogN * ii
-    tempMat[t(rbind(Adata$i,Adata$j))] = tempMat[t(rbind(Adata$i,Adata$j))] + Adata[,ii+5]
-    #tempMat[t(rbind(diagCounts$i,diagCounts$i))] = tempMat[t(rbind(diagCounts$i,diagCounts$i))] -
-    #  diagCounts$freq
+    tempMat <- baseMat * LogN^3
+    tempMat[t(rbind(Adata$i,Adata$j))] =  tempMat[t(rbind(Adata$i,Adata$j))] +
+                                          Adata[,ii+5]
     matList[[ii+1]] = tempMat
   }
-  matList[[LogN+1]] = baseMat*LogN^2 + Alap
+  matList[[LogN+1]] = baseMat*(LogN^3 - 1) + Alap
+  pList <- list()
+  lList <- list()
+  cList <- list()
+  if (FALSE){
+  ii=length(matList)-1
+  rnzVec <- rowNZcountVec(matList[[ii]])
+  permVec <- order(rnzVec)
+  dVal <- match(4,rnzVec[permVec],nomatch=0)
+  MP <- as(genSRPmat(permVec,
+                     dim(matList[[ii]])[1],dim(matList[[ii]])[2]),
+           "dgCMatrix")
+  dVal = match(4,permVec,nomatch=0)
+  pA <- MP%*%(matList[[ii]]+1e-10*diag(dim(matList[[ii]])[1]))%*%t(MP)
+  if (dVal != 0) {
+    tempList<- matLL(pA,dVal-1)
+  }
+  for (ii in (length(matList)-2):1) {
+    
+  }
   cList <- list()
   lList <- list()
-  pList <- list()
+  pList <- list()}
   return(list(offEdgeData=offEdgeData,Adata=Adata,
               #counts=data.frame(i=ivec,j=jvec,c=cvec),dcounts=diagCounts,
               matList=matList,idMat=EidMat))
@@ -1300,5 +1353,176 @@ scChebySol <- function(A,Atree,b,x0=c(),tol=1.0e-10,imax=1000,verbose=FALSE) {
   }
   if (!converged) warning("Did not converge!")
   if (verbose) print(t(norm/norm0))
+  return(x)
+}
+
+cmcgSol <- function(Cmat,Ccond,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1) {
+  
+  b = as(array(data=b,dim=c(length(b),1)),"numeric")
+  if (length(x)<1) {
+    x=as(array(data=0,dim=c(length(b),1)),"numeric")
+  } else {
+    x = as(array(data=x,dim(c(length(x),1))),"numeric")
+  }
+  
+  r = b - Cmat %*% x
+  #z = Minv %*% r
+  z = cgSol(Ccond,r,x,tol,imax,verbose=FALSE)
+  p=z
+  
+  ttemp<-proc.time()
+  
+  norm0 = sum(abs(r))
+  norm= c()
+  it=1
+  converged=FALSE
+  if (verbose && itimes > 0) {
+    print(paste("setup time: ",(proc.time()-ttemp)[3],sep=""))
+  }
+  while (!converged && it <= imax) {
+    if (verbose && it < itimes){
+      ttemp<-proc.time()
+    }
+    alpha = t(r)%*%z / (t(p)%*%Cmat%*%p)
+    x = x + t(alpha*t(p))
+    r0 = r
+    r= r - t(alpha*t(Cmat%*%p))
+    norm = append(norm,sum(abs(r)))
+    if (norm[it]/norm0 < tol) {
+      converged = TRUE
+    } else {
+      if (verbose && it < itimes) {
+        ttemp=proc.time()
+      }
+      z0=z
+      z = cgSol(Ccond,r,p,tol,imax,verbose)
+      beta = t(z)%*%(r-r0) / (t(z0)%*%r0)
+      p = z + t(beta * t(p))
+      if(verbose && it < itimes) {
+        print(paste("iteration ",it," time: ",(proc.time()-ttemp)[3],sep=""))
+      }
+      it = it +1
+    }
+  }
+  if (!converged) warning("did not converge!")
+  if (verbose) print(paste("iterations: ",it))
+  #if (verbose) print(norm/norm0)
+  return(x)
+  
+}
+
+clpcgSol <- function(A,cmat,lmat,pmat,cval,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1) {
+  
+  b = as(array(data=b,dim=c(length(b),1)),"numeric")
+  if (length(x)<1) {
+    x=as(array(data=0,dim=c(length(b),1)),"numeric")
+  } else {
+    x = as(array(data=x,dim(c(length(x),1))),"numeric")
+  }
+  
+  r = b - A %*% x
+  #z = Minv %*% r
+  z = cgSol(Ccond,r,x,tol,imax,verbose=FALSE)
+  p=z
+  
+  ttemp<-proc.time()
+  
+  norm0 = sum(abs(r))
+  norm= c()
+  it=1
+  converged=FALSE
+  if (verbose && itimes > 0) {
+    print(paste("setup time: ",(proc.time()-ttemp)[3],sep=""))
+  }
+  while (!converged && it <= imax) {
+    if (verbose && it < itimes){
+      ttemp<-proc.time()
+    }
+    alpha = t(r)%*%z / (t(p)%*%Cmat%*%p)
+    x = x + t(alpha*t(p))
+    r0 = r
+    r= r - t(alpha*t(Cmat%*%p))
+    norm = append(norm,sum(abs(r)))
+    if (norm[it]/norm0 < tol) {
+      converged = TRUE
+    } else {
+      if (verbose && it < itimes) {
+        ttemp=proc.time()
+      }
+      z0=z
+      z = cgSol(Ccond,r,p,tol,imax,verbose)
+      beta = t(z)%*%(r-r0) / (t(z0)%*%r0)
+      p = z + t(beta * t(p))
+      if(verbose && it < itimes) {
+        print(paste("iteration ",it," time: ",(proc.time()-ttemp)[3],sep=""))
+      }
+      it = it +1
+    }
+  }
+  if (!converged) warning("did not converge!")
+  if (verbose) print(paste("iterations: ",it))
+  #if (verbose) print(norm/norm0)
+  return(x)
+  
+}
+
+rccgSol <- function(A,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,f=1,
+                    cDataList) {
+  
+  #cDataList: list of L and associated C matrices.
+  #   If the list is null, then standard CG is run on the
+  #   input matrix.
+  #   If C is not a simple diagonal matrix then cutVal
+  #   should also be present to indicate where to cut off
+  #   the elimination backsolve and start next level
+  #   May also contain P (a permutation matrix) which will
+  #   be applied if present.
+  
+  if (is.null(cDataList)) {
+    #run cg
+  } else {
+    if (is.null(cDataList[[length(cDataList)]]$P)) { 
+      
+    } else {
+      #Apply permutations
+      
+    }
+  }
+  
+  b = as(array(data=b,dim=c(length(b),1)),"numeric")
+  if (length(x)<1) {
+    x=as(array(data=0,dim=c(length(b),1)),"numeric")
+  } else {
+    x = as(array(data=x,dim(c(length(x),1))),"numeric")
+  }
+  
+  r = b - A %*% x
+  #z = Minv %*% r
+  z = f*t(MP)%*%backsolve(pAtreeR,forwardsolve(t(pAtreeR),MP%*%r))
+  p=z
+  
+  norm0 = sum(r^2)
+  norm= c()
+  it=0
+  converged=FALSE
+  while (!converged && it <= imax) {
+    alpha = t(r)%*%z / (t(p)%*%A%*%p)
+    x = x + t(alpha*t(p))
+    r0 = r
+    r= r - t(alpha*t(A%*%p))
+    norm = append(norm,sum(r^2))
+    if (norm[it+1]/norm0 < tol) {
+      converged = TRUE
+    } else {
+      z0=z
+      z = f*t(MP)%*%backsolve(pAtreeR,forwardsolve(t(pAtreeR),MP%*%r))
+      beta = t(z)%*%(r-r0) / (t(z0)%*%r0)
+      p = z + t(beta * t(p))
+      it = it + 1
+    }
+  }
+  if (!converged) warning("did not converge!")
+  if (verbose) print(paste("iterations: ",it))
+  #if (verbose) print(norm/norm0)
   return(x)
 }
