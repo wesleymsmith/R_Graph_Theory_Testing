@@ -870,7 +870,8 @@ sampleOffTreeEdges <- function(A,Atree,AEdat,offEdgeData,sampleSize) {
   
 }
 
-cgSol <- function(A,b,x=c(),tol=1e-6,imax=10000,verbose=FALSE) {
+cgSol <- function(A,b,x=c(),tol=1e-6,imax=10000,verbose=FALSE,
+                  cWarn=TRUE) {
   l=0
   b = as(array(data=b,dim=c(length(b),1)),"numeric")
   if (length(x)<1) {
@@ -905,7 +906,7 @@ cgSol <- function(A,b,x=c(),tol=1e-6,imax=10000,verbose=FALSE) {
     norm=append(norm,sum(abs(r)))
     if (norm[it] / norm0 <= tol) converged = TRUE
   }
-  if (!converged) warning("Did not converge!")
+  if (!converged && cWarn) warning("Did not converge!")
   if (verbose) print(paste("Required ",it," iterations",sep=""))
   #if (verbose) print(norm/norm0)
   return(x)
@@ -1129,15 +1130,17 @@ graphDataToConditioners <- function(Gdata) {
   loffEdges<-subset(offEdgeData,i>j)
   #sampling portion
   matList <- list();
-  LogN <- floor(log(length(diag(Alap))))
+  matN <- length(diag(Alap))
+  LogN <- floor(log(matN))
   baseMat<- Alap * 0 + Atree
   Adata[,5]<- 0
-  matList[[1]] <- baseMat * LogN^3
-  for (ii in 1:LogN){
+  matList[[1]] <- baseMat * LogN^2
+  for (ii in 1:LogN){ #need to rework this to only add to empty off tree edges
     idSample <- count(sample(x=loffEdges$id,prob=loffEdges$prob,replace=TRUE,
                            size=LogN^2))
     Adata[,ii+5] <- Adata[,ii+4]
-    Adata[idSample$x,ii+5] <- Adata[idSample$x,ii+5] + idSample$freq * 
+    Adata[idSample$x,ii+5] <- (abs(  (abs(Adata[idSample$x,ii+5]) >0 ) + 
+                                     (abs(idSample$freq) >0 ) ) >0 ) * 
                               Adata$x[idSample$x]
     cids <- EidMat[t(rbind(Adata[idSample$x,"j"],Adata[idSample$x,"i"]))]
     Adata[cids,ii+5] <- Adata[idSample$x,ii+5]
@@ -1145,37 +1148,110 @@ graphDataToConditioners <- function(Gdata) {
                                 c=Adata[c(idSample$x,cids),ii+5]
                                 ),vars="i",wt_var="c")
     Adata[EidMat[t(rbind(dcounts$i,dcounts$i))],ii+5] <- -1*dcounts$freq
-    tempMat <- baseMat * LogN^3
+    tempMat <- baseMat * LogN^2
     tempMat[t(rbind(Adata$i,Adata$j))] =  tempMat[t(rbind(Adata$i,Adata$j))] +
                                           Adata[,ii+5]
     matList[[ii+1]] = tempMat
   }
-  matList[[LogN+1]] = baseMat*(LogN^3 - 1) + Alap
+  matList[[LogN+1]] = baseMat*(LogN^2 - 1) + Alap
   pList <- list()
   lList <- list()
   cList <- list()
-  if (FALSE){
-  ii=length(matList)-1
-  rnzVec <- rowNZcountVec(matList[[ii]])
-  permVec <- order(rnzVec)
-  dVal <- match(4,rnzVec[permVec],nomatch=0)
-  MP <- as(genSRPmat(permVec,
-                     dim(matList[[ii]])[1],dim(matList[[ii]])[2]),
-           "dgCMatrix")
-  dVal = match(4,permVec,nomatch=0)
-  pA <- MP%*%(matList[[ii]]+1e-10*diag(dim(matList[[ii]])[1]))%*%t(MP)
-  if (dVal != 0) {
-    tempList<- matLL(pA,dVal-1)
+  if (TRUE){
+    MPdata <- spannerListPvec(matList)
+    MP <- genSRPmat(MPdata$pVec,matN,matN)
+    lList <- list()
+    cList <- list()
+    for (ii in 1:(length(matList)-1)) {
+      #print(MPdata$mInds[[ii]]-1)
+      lcTemp <- matLL(MP%*%matList[[ii]]%*%t(MP),MPdata$mInds[ii]-1)
+      lList[[ii]] <- lcTemp$L
+      cList[[ii]] <- lcTemp$C
+    }
   }
-  for (ii in (length(matList)-2):1) {
-    
-  }
-  cList <- list()
-  lList <- list()
-  pList <- list()}
   return(list(offEdgeData=offEdgeData,Adata=Adata,
               #counts=data.frame(i=ivec,j=jvec,c=cvec),dcounts=diagCounts,
-              matList=matList,idMat=EidMat))
+              matList=matList,idMat=EidMat,MPdata=MPdata,MP=MP,
+              lList=lList,cList=cList))
+}
+
+#need to add automated testing 
+
+#clpData is list with
+# L, C, MP s.t. conditioner = t(MP).t(L).C.L.MP
+# ind : the length of non unity entries in the diagonal of C
+clpccgSol <- function(A,clpData,b,x=c(),tol=1e-6,imax=1000,
+                      verbose=FALSE,itimes=1) {
+  
+  #Mchol <- chol(Atree + 1.0e-12 * diag(min(dim(Atree))))
+  #Minv <- chol2inv(Mchol)
+  #create permutation and cholesky decomposition of the tree if bad or not provided
+  if (verbose && itimes > 0) {
+    ttemp <- proc.time()
+  }
+
+N <- dim(A)[1]
+MP <- clpData$MP
+L <- clpData$L
+C <- clpData$C
+Linv <- solve(clpData$L)
+Linv <- (abs(Linv) > tol)*Linv
+ind <- clpData$ind
+
+cits <- ceiling(2*log(N-ind))
+
+#Minv = diag(min(dim(Minv)))
+
+b = as(array(data=b,dim=c(length(b),1)),"numeric")
+if (length(x)<1) {
+  x=as(array(data=0,dim=c(length(b),1)),"numeric")
+} else {
+  x = as(array(data=x,dim(c(length(x),1))),"numeric")
+}
+
+r = b - A %*% x
+#z = Minv %*% r
+z = Linv%*%(MP%*%b)
+z[ind:N] <- cgSol(C,z[ind:N],imax=cits,cWarn=FALSE)
+z = 
+p=z
+
+norm0 = sum(abs(r))
+norm= c()
+it=1
+converged=FALSE
+if (verbose && itimes > 0) {
+  print(paste("setup time: ",(proc.time()-ttemp)[3],sep=""))
+}
+while (!converged && it <= imax) {
+  if (verbose && it < itimes){
+    ttemp<-proc.time()
+  }
+  alpha = t(r)%*%z / (t(p)%*%A%*%p)
+  x = x + t(alpha*t(p))
+  r0 = r
+  r= r - t(alpha*t(A%*%p))
+  norm = append(norm,sum(abs(r)))
+  if (norm[it]/norm0 < tol) {
+    converged = TRUE
+  } else {
+    if (verbose && it < itimes) {
+      ttemp=proc.time()
+    }
+    z0=z
+    z = f*t(MP)%*%backsolve(pAtreeR,forwardsolve(t(pAtreeR),MP%*%r))
+    beta = t(z)%*%(r-r0) / (t(z0)%*%r0)
+    p = z + t(beta * t(p))
+    if(verbose && it < itimes) {
+      print(paste("iteration ",it," time: ",(proc.time()-ttemp)[3],sep=""))
+    }
+    it = it +1
+  }
+}
+if (!converged) warning("did not converge!")
+if (verbose) print(paste("iterations: ",it))
+#if (verbose) print(norm/norm0)
+return(x)
 }
 
 hccgSol <- function(A,Atree,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,f=1,
