@@ -29,9 +29,9 @@ matLL <- function(A,ni=dim(A)[1]-1) {
   n = dim(A)[1]
   AA=A
   for ( i in c( 1:(ni) ) ) {
-    A[i,i] = sqrt(AA[i,i])
+    A[i,i] = sqrt(A[i,i])
     val = 1 / A[i,i]
-    A[(i+1):n,i] = val * AA[(i+1):n,i]
+    A[(i+1):n,i] = val * A[(i+1):n,i]
     A[i,(i+1):n] = A[(i+1):n,i]
     A[(i+1):n,(i+1):n]= A[(i+1):n,(i+1):n] - 
       matrix(A[(i+1):n,i],nrow=n-i,ncol=1) %*% 
