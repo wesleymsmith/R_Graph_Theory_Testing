@@ -1487,7 +1487,8 @@ cmcgSol <- function(Cmat,Ccond,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1
   
 }
 
-clpcgSol <- function(A,cmat,lmat,pmat,cval,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1) {
+clpcgSol <- function(A,Cmat,cmat,limat,pmat,cval=1,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1,
+                     cWarn=TRUE,zimage=FALSE) {
   
   b = as(array(data=b,dim=c(length(b),1)),"numeric")
   if (length(x)<1) {
@@ -1496,9 +1497,15 @@ clpcgSol <- function(A,cmat,lmat,pmat,cval,b,x=c(),tol=1e-6,imax=1000,verbose=FA
     x = as(array(data=x,dim(c(length(x),1))),"numeric")
   }
   
+  nr = dim(A)[1]
+  cits = ceiling(2*log(nr-cval))
+  
   r = b - A %*% x
   #z = Minv %*% r
-  z = cgSol(Ccond,r,x,tol,imax,verbose=FALSE)
+  z = (limat)%*%(pmat)%*%r
+  z[cval:nr] = cgSol(cmat[cval:nr,cval:nr],r[cval:nr],x=rep(0,nr-cval+1),
+                     tol,imax=cits,verbose=FALSE,cWarn=FALSE)
+  z = t(pmat)%*%t(limat)%*%z
   p=z
   
   ttemp<-proc.time()
@@ -1511,14 +1518,22 @@ clpcgSol <- function(A,cmat,lmat,pmat,cval,b,x=c(),tol=1e-6,imax=1000,verbose=FA
     print(paste("setup time: ",(proc.time()-ttemp)[3],sep=""))
   }
   while (!converged && it <= imax) {
+    if (zimage) {
+      image(t(matrix(z,nrow=5,ncol=7)))
+    }
     if (verbose && it < itimes){
       ttemp<-proc.time()
     }
-    alpha = t(r)%*%z / (t(p)%*%Cmat%*%p)
+    alpha = t(r)%*%z / (t(p)%*%A%*%p)
     x = x + t(alpha*t(p))
     r0 = r
-    r= r - t(alpha*t(Cmat%*%p))
+    r= r - t(alpha*t(A%*%p))
     norm = append(norm,sum(abs(r)))
+    if (verbose) print(c(it,norm[it]))
+    if (is.nan(norm[it]) ) {
+      print(t(z))
+      stop("ERROR!, norm undefined!")
+    }
     if (norm[it]/norm0 < tol) {
       converged = TRUE
     } else {
@@ -1526,7 +1541,12 @@ clpcgSol <- function(A,cmat,lmat,pmat,cval,b,x=c(),tol=1e-6,imax=1000,verbose=FA
         ttemp=proc.time()
       }
       z0=z
-      z = cgSol(Ccond,r,p,tol,imax,verbose)
+      
+      z = (limat)%*%(pmat)%*%r
+      z[cval:nr] = cgSol(cmat[cval:nr,cval:nr],b=z[cval:nr],x=r[cval:nr],
+                         tol,imax=cits,verbose=FALSE,cWarn=FALSE)
+      z = t(pmat)%*%t(limat)%*%z
+
       beta = t(z)%*%(r-r0) / (t(z0)%*%r0)
       p = z + t(beta * t(p))
       if(verbose && it < itimes) {
@@ -1535,7 +1555,7 @@ clpcgSol <- function(A,cmat,lmat,pmat,cval,b,x=c(),tol=1e-6,imax=1000,verbose=FA
       it = it +1
     }
   }
-  if (!converged) warning("did not converge!")
+  if (!converged && cWarn) warning("did not converge!")
   if (verbose) print(paste("iterations: ",it))
   #if (verbose) print(norm/norm0)
   return(x)
