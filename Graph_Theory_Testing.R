@@ -873,12 +873,12 @@ sampleOffTreeEdges <- function(A,Atree,AEdat,offEdgeData,sampleSize) {
 cgSol <- function(A,b,x=c(),tol=1e-6,imax=10000,verbose=FALSE,
                   cWarn=TRUE) {
   l=0
-  b = as(array(data=b,dim=c(length(b),1)),"numeric")
+  b = array(data=as(b,"numeric"),dim=c(length(b),1))
   if (length(x)<1) {
-    x=as(array(data=0,dim=c(length(b),1)),"numeric")
+    x=array(data=0,dim=c(length(b),1))
     r = b - A%*%x
   } else {
-    x = as(array(data=x,dim=(c(length(x),1)) ),"numeric")
+    x = array(data=as(x,"numeric"),dim=(c(length(x),1)) )
   }
   r0= b - A%*%array(data=0,dim=(c(length(x),1)))
   r= b - A%*%x
@@ -889,6 +889,10 @@ cgSol <- function(A,b,x=c(),tol=1e-6,imax=10000,verbose=FALSE,
   }
   p=r
   norm = c(sum(abs(r)))
+  if (norm0 == 0 || norm[1] == 0) {
+    return(r0)
+    stop()
+  }
   it=1
   converged=FALSE
   while (!converged && it <= imax) {
@@ -1134,10 +1138,11 @@ graphDataToConditioners <- function(Gdata) {
   LogN <- floor(log(matN))
   baseMat<- Alap * 0 + Atree
   Adata[,5]<- 0
-  matList[[1]] <- baseMat * LogN^2
-  for (ii in 1:LogN){ #need to rework this to only add to empty off tree edges
+  sfac=LogN
+  matList[[1]] <- baseMat * sfac
+  for (ii in 1:LogN^2){ #need to rework this to only add to empty off tree edges
     idSample <- count(sample(x=loffEdges$id,prob=loffEdges$prob,replace=TRUE,
-                           size=LogN^2))
+                           size=LogN))
     Adata[,ii+5] <- Adata[,ii+4]
     Adata[idSample$x,ii+5] <- (abs(  (abs(Adata[idSample$x,ii+5]) >0 ) + 
                                      (abs(idSample$freq) >0 ) ) >0 ) * 
@@ -1148,12 +1153,12 @@ graphDataToConditioners <- function(Gdata) {
                                 c=Adata[c(idSample$x,cids),ii+5]
                                 ),vars="i",wt_var="c")
     Adata[EidMat[t(rbind(dcounts$i,dcounts$i))],ii+5] <- -1*dcounts$freq
-    tempMat <- baseMat * LogN^2
+    tempMat <- baseMat * sfac
     tempMat[t(rbind(Adata$i,Adata$j))] =  tempMat[t(rbind(Adata$i,Adata$j))] +
                                           Adata[,ii+5]
     matList[[ii+1]] = tempMat
   }
-  matList[[LogN+1]] = baseMat*(LogN^2 - 1) + Alap
+  matList[[LogN^2+1]] = baseMat*(sfac - 1) + Alap
   pList <- list()
   lList <- list()
   cList <- list()
@@ -1169,10 +1174,11 @@ graphDataToConditioners <- function(Gdata) {
       cList[[ii]] <- lcTemp$C
     }
   }
+  liList <- lapply(lList,function(mat) as(solve(mat),"dgCMatrix"))
   return(list(offEdgeData=offEdgeData,Adata=Adata,
               #counts=data.frame(i=ivec,j=jvec,c=cvec),dcounts=diagCounts,
               matList=matList,idMat=EidMat,MPdata=MPdata,MP=MP,
-              lList=lList,cList=cList))
+              lList=lList,cList=cList,liList=liList))
 }
 
 #need to add automated testing 
@@ -1487,76 +1493,91 @@ cmcgSol <- function(Cmat,Ccond,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1
   
 }
 
-clpcgSol <- function(A,Cmat,cmat,limat,pmat,cval=1,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1,
-                     cWarn=TRUE,zimage=FALSE) {
-  
-  b = as(array(data=b,dim=c(length(b),1)),"numeric")
+clpcgSol <- function(A,cmat,limat,pmat,cval=1,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1,
+                     cWarn=TRUE) {
+  b =array(data=as(b,"numeric") ,dim=c(length(b),1))
   if (length(x)<1) {
-    x=as(array(data=0,dim=c(length(b),1)),"numeric")
+    x=array(data=0,dim=c(length(b),1))
   } else {
-    x = as(array(data=x,dim(c(length(x),1))),"numeric")
+    x =array(data=as(x,"numeric"),dim(c(length(x),1)))
   }
   
   nr = dim(A)[1]
-  cits = ceiling(2*log(nr-cval))
-  
+  cits = ceiling((nr-cval)+1)
+  #print(cits)
   r = b - A %*% x
   #z = Minv %*% r
+
   z = (limat)%*%(pmat)%*%r
-  z[cval:nr] = cgSol(cmat[cval:nr,cval:nr],r[cval:nr],x=rep(0,nr-cval+1),
+  z[cval:nr] = cgSol(cmat[cval:nr,cval:nr],
+                     b=array(z[cval:nr],dim=c(nr-cval+1,1)),
+                     x=array(z[cval:nr],dim=c(nr-cval+1,1)),
                      tol,imax=cits,verbose=FALSE,cWarn=FALSE)
   z = t(pmat)%*%t(limat)%*%z
   p=z
   
   ttemp<-proc.time()
-  
   norm0 = sum(abs(r))
-  norm= c()
+  if (norm0 == 0) {
+    return(r)
+    stop()
+  }
+  norm= c(norm0)
+  ccount=1
   it=1
   converged=FALSE
   if (verbose && itimes > 0) {
-    print(paste("setup time: ",(proc.time()-ttemp)[3],sep=""))
+    #print(paste("setup time: ",(proc.time()-ttemp)[3],sep=""))
   }
   while (!converged && it <= imax) {
-    if (zimage) {
-      image(t(matrix(z,nrow=5,ncol=7)))
-    }
     if (verbose && it < itimes){
       ttemp<-proc.time()
     }
-    alpha = t(r)%*%z / (t(p)%*%A%*%p)
+    it = it +1
+    alpha = as((t(r)%*%z / (t(p)%*%A%*%p)),"numeric")
     x = x + t(alpha*t(p))
     r0 = r
     r= r - t(alpha*t(A%*%p))
     norm = append(norm,sum(abs(r)))
-    if (verbose) print(c(it,norm[it]))
     if (is.nan(norm[it]) ) {
       print(t(z))
       stop("ERROR!, norm undefined!")
     }
     if (norm[it]/norm0 < tol) {
       converged = TRUE
+      print(paste("converge in",it-1,"iterations"))
     } else {
       if (verbose && it < itimes) {
         ttemp=proc.time()
       }
       z0=z
-      
+      if (norm[it]/norm0 > norm[it-1]/norm0) {
+        cits = max(1,cits-2)        
+        #ccount=1
+      }
+      else {
+        cits = max(ceiling(((nr-cval+1) - cits)/2)+cits,
+                   (nr-cval+1))
+        #ccount=ccount+1
+      }
       z = (limat)%*%(pmat)%*%r
-      z[cval:nr] = cgSol(cmat[cval:nr,cval:nr],b=z[cval:nr],x=r[cval:nr],
+      z[cval:nr] = cgSol(cmat[cval:nr,cval:nr],
+                         b=array(z[cval:nr],dim=c(nr-cval+1,1)),
+                         x=array(z[cval:nr],dim=c(nr-cval+1,1)),
                          tol,imax=cits,verbose=FALSE,cWarn=FALSE)
       z = t(pmat)%*%t(limat)%*%z
-
+      
       beta = t(z)%*%(r-r0) / (t(z0)%*%r0)
       p = z + t(beta * t(p))
+
       if(verbose && it < itimes) {
-        print(paste("iteration ",it," time: ",(proc.time()-ttemp)[3],sep=""))
+        print(paste("iteration ",it-1," time: ",(proc.time()-ttemp)[3],sep=""))
       }
-      it = it +1
+
     }
   }
   if (!converged && cWarn) warning("did not converge!")
-  if (verbose) print(paste("iterations: ",it))
+  if (verbose) print(paste("iterations: ",it,sep=""))
   #if (verbose) print(norm/norm0)
   return(x)
   
