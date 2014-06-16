@@ -1138,11 +1138,11 @@ graphDataToConditioners <- function(Gdata) {
   LogN <- floor(log(matN))
   baseMat<- Alap * 0 + Atree
   Adata[,5]<- 0
-  sfac=LogN
+  sfac=LogN^2
   matList[[1]] <- baseMat * sfac
-  for (ii in 1:LogN^2){ #need to rework this to only add to empty off tree edges
+  for (ii in 1:(2*LogN)){ #need to rework this to only add to empty off tree edges
     idSample <- count(sample(x=loffEdges$id,prob=loffEdges$prob,replace=TRUE,
-                           size=LogN))
+                           size=LogN^2))
     Adata[,ii+5] <- Adata[,ii+4]
     Adata[idSample$x,ii+5] <- (abs(  (abs(Adata[idSample$x,ii+5]) >0 ) + 
                                      (abs(idSample$freq) >0 ) ) >0 ) * 
@@ -1158,7 +1158,7 @@ graphDataToConditioners <- function(Gdata) {
                                           Adata[,ii+5]
     matList[[ii+1]] = tempMat
   }
-  matList[[LogN^2+1]] = baseMat*(sfac - 1) + Alap
+  matList[[2*LogN+1]] = baseMat*(sfac - 1) + Alap
   pList <- list()
   lList <- list()
   cList <- list()
@@ -1501,15 +1501,15 @@ clpcgSol <- function(A,cmat,limat,pmat,cval=1,b,x=c(),tol=1e-6,imax=1000,verbose
   } else {
     x =array(data=as(x,"numeric"),dim(c(length(x),1)))
   }
-  
   nr = dim(A)[1]
+  A=A+diag(nr)*tol/log(nr)
   cits = ceiling((nr-cval)+1)
   #print(cits)
   r = b - A %*% x
   #z = Minv %*% r
 
   z = (limat)%*%(pmat)%*%r
-  z[cval:nr] = cgSol(cmat[cval:nr,cval:nr],
+  z[cval:nr] = cgSol(cmat[cval:nr,cval:nr]+diag(nr-cval+1)*tol/log(nr-cval+1),
                      b=array(z[cval:nr],dim=c(nr-cval+1,1)),
                      x=array(z[cval:nr],dim=c(nr-cval+1,1)),
                      tol,imax=cits,verbose=FALSE,cWarn=FALSE)
@@ -1561,7 +1561,7 @@ clpcgSol <- function(A,cmat,limat,pmat,cval=1,b,x=c(),tol=1e-6,imax=1000,verbose
         #ccount=ccount+1
       }
       z = (limat)%*%(pmat)%*%r
-      z[cval:nr] = cgSol(cmat[cval:nr,cval:nr],
+      z[cval:nr] = cgSol(cmat[cval:nr,cval:nr]+diag(nr-cval+1)*tol/log(nr-cval+1),
                          b=array(z[cval:nr],dim=c(nr-cval+1,1)),
                          x=array(z[cval:nr],dim=c(nr-cval+1,1)),
                          tol,imax=cits,verbose=FALSE,cWarn=FALSE)
