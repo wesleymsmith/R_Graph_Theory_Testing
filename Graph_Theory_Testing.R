@@ -871,8 +871,9 @@ sampleOffTreeEdges <- function(A,Atree,AEdat,offEdgeData,sampleSize) {
 }
 
 cgSol <- function(A,b,x=c(),tol=1e-6,imax=10000,verbose=FALSE,
-                  cWarn=TRUE) {
+                  cWarn=TRUE,giveIts=FALSE,giveT=FALSE) {
   l=0
+  t1<-proc.time()
   b = array(data=as(b,"numeric"),dim=c(length(b),1))
   if (length(x)<1) {
     x=array(data=0,dim=c(length(b),1))
@@ -913,7 +914,15 @@ cgSol <- function(A,b,x=c(),tol=1e-6,imax=10000,verbose=FALSE,
   if (!converged && cWarn) warning("Did not converge!")
   if (verbose) print(paste("Required ",it," iterations",sep=""))
   #if (verbose) print(norm/norm0)
-  return(x)
+  if (giveIts || giveT) {
+    rlist=list(x=x)
+    if (giveIts) rlist$it=it
+    if (giveT) rlist$t=(proc.time()-t1)[["elapsed"]]
+    return(rlist)
+  }
+  else{
+    return(x) 
+  }
 }
 
 tccgSol <- function(A,Atree,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,f=1,
@@ -1144,15 +1153,15 @@ graphDataToConditioners <- function(Gdata) {
     idSample <- count(sample(x=loffEdges$id,prob=loffEdges$prob,replace=TRUE,
                            size=LogN^2))
     Adata[,ii+5] <- Adata[,ii+4]
-    Adata[idSample$x,ii+5] <- (abs(  (abs(Adata[idSample$x,ii+5]) >0 ) + 
-                                     (abs(idSample$freq) >0 ) ) >0 ) * 
-                              Adata$x[idSample$x]
+    Adata[idSample$x,ii+5] <- mapply(function(a,b,fac) (a||b)*fac,
+                                     Adata[idSample$x,ii+5],idSample$freq,Adata$x[idSample$x])
     cids <- EidMat[t(rbind(Adata[idSample$x,"j"],Adata[idSample$x,"i"]))]
     Adata[cids,ii+5] <- Adata[idSample$x,ii+5]
-    dcounts <-  count(data.frame(i=Adata$i[c(idSample$x,cids)],
-                                c=Adata[c(idSample$x,cids),ii+5]
+    dcounts <-  count(data.frame(i=Adata$i[offEdgeData$id],
+                                c=Adata[offEdgeData$id,ii+5]
                                 ),vars="i",wt_var="c")
-    Adata[EidMat[t(rbind(dcounts$i,dcounts$i))],ii+5] <- -1*dcounts$freq
+    dIds <- EidMat[t(rbind(dcounts$i,dcounts$i))]
+    Adata[dIds,ii+5] <- -1*dcounts$freq
     tempMat <- baseMat * sfac
     tempMat[t(rbind(Adata$i,Adata$j))] =  tempMat[t(rbind(Adata$i,Adata$j))] +
                                           Adata[,ii+5]
@@ -1438,8 +1447,9 @@ scChebySol <- function(A,Atree,b,x0=c(),tol=1.0e-10,imax=1000,verbose=FALSE) {
   return(x)
 }
 
-cmcgSol <- function(Cmat,Ccond,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1) {
-  
+cmcgSol <- function(Cmat,Ccond,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1,cAdapt=FALSE,cits=1000,cWarn=FALSE,
+                    cVerb=FALSE,cFac=.9375,gItTotals=FALSE) {
+  t1<-proc.time()
   b = as(array(data=b,dim=c(length(b),1)),"numeric")
   if (length(x)<1) {
     x=as(array(data=0,dim=c(length(b),1)),"numeric")
@@ -1449,7 +1459,23 @@ cmcgSol <- function(Cmat,Ccond,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1
   
   r = b - Cmat %*% x
   #z = Minv %*% r
-  z = cgSol(Ccond,r,x,tol,imax,verbose=FALSE)
+  #if (cAdapt) {
+  #  zdat = cgSol(Ccond,r,x,tol,imax=cits,verbose=cVerb,cWarn=cWarn,giveIts=TRUE)
+  #  z = zdat$x
+  #  citsmax=ceiling((zdat$it))
+    citsmax = cits
+  #} else {
+  if (gItTotals==FALSE ) {
+    z = cgSol(Ccond,r,x,tol,imax=cits,verbose=cVerb,cWarn)
+  } else {
+    zdat = cgSol(Ccond,r,x,tol,imax=cits,verbose=cVerb,cWarn,giveIts=TRUE)
+    z=zdat$x
+    subIts=zdat$it
+    subProd=log(zdat$it)
+  }
+    
+  #}
+
   p=z
   
   ttemp<-proc.time()
@@ -1458,9 +1484,6 @@ cmcgSol <- function(Cmat,Ccond,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1
   norm= c()
   it=1
   converged=FALSE
-  if (verbose && itimes > 0) {
-    print(paste("setup time: ",(proc.time()-ttemp)[3],sep=""))
-  }
   while (!converged && it <= imax) {
     if (verbose && it < itimes){
       ttemp<-proc.time()
@@ -1477,20 +1500,38 @@ cmcgSol <- function(Cmat,Ccond,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1
         ttemp=proc.time()
       }
       z0=z
-      z = cgSol(Ccond,r,p,tol,imax,verbose)
+      if (gItTotals==FALSE ) {
+        z = cgSol(Ccond,r,p,tol,imax=cits,verbose=cVerb,cWarn)
+      } else {
+        zdat = cgSol(Ccond,r,p,tol,imax=cits,verbose=cVerb,cWarn,giveIts=TRUE)
+        z=zdat$x
+        subIts=subIts+zdat$it
+        subProd=subProd+log(zdat$it)
+      }
       beta = t(z)%*%(r-r0) / (t(z0)%*%r0)
       p = z + t(beta * t(p))
       if(verbose && it < itimes) {
         print(paste("iteration ",it," time: ",(proc.time()-ttemp)[3],sep=""))
       }
+      if (cAdapt && it > 1) {
+        if (norm[it]/norm[it-1] > 1) {
+          cits = min(citsmax, cits*(norm[it]/norm[it-1])^2)
+        }
+        else {
+          cits = max(2,cits-1)
+        }
+      }
       it = it +1
     }
   }
   if (!converged) warning("did not converge!")
-  if (verbose) print(paste("iterations: ",it))
+  if (verbose) print(paste("cFac",cFac,"iterations: ",it,"time",(proc.time()-t1)[["elapsed"]] ) )
   #if (verbose) print(norm/norm0)
-  return(x)
-  
+  if (gItTotals) {
+    return(list(x=x,it=it,sit=subIts,time=(proc.time()-t1)[["elapsed"]],subProd=subProd))
+  } else {
+    return(x) 
+  }
 }
 
 clpcgSol <- function(A,cmat,limat,pmat,cval=1,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1,
@@ -1642,4 +1683,120 @@ rccgSol <- function(A,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,f=1,
   if (verbose) print(paste("iterations: ",it))
   #if (verbose) print(norm/norm0)
   return(x)
+}
+
+hcmcgSol <- function(Mlist,mInds,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1,
+                    cWarn=TRUE) {
+  A = Mlist[[1]]; cmat=Mlist[[2]]; cval=mInds[1]
+  b =array(data=as(b,"numeric") ,dim=c(length(b),1))
+  if (length(x)<1) {
+    x=array(data=0,dim=c(length(b),1))
+  } else {
+    x =array(data=as(x,"numeric"),dim(c(length(x),1)))
+  }
+  nr = dim(A)[1]
+  A=A+diag(nr)*tol/log(nr)
+  cits = ceiling((nr-cval)+1)
+  #print(cits)
+  r = b - A %*% x
+  #z = Minv %*% r
+  Mlen = length(Mlist)
+  #z = (limat)%*%(pmat)%*%r
+  if (Mlen < 3) {
+    z=r
+    z[cval:nr] = hmcgSol(Mlist[2:Mlen],mInds[2:Mlen],
+                       b=array(z[cval:nr],dim=c(nr-cval+1,1)),
+                       x=array(z[cval:nr],dim=c(nr-cval+1,1)),
+                       tol,imax=cits,verbose=FALSE,cWarn=FALSE)
+  }
+  else {
+    z=r
+    z[cval:nr] = cgSol(Mlist[2][cval:nr,cval:nr],b[cval:nr,cval:nr],
+                       x=array(z[cval:nr],dim=c(nr-cval+1,1)),
+                       tol,imax=cits,verbose=FALSE,cWarn=FALSE)
+  }
+
+  #z = t(pmat)%*%t(limat)%*%z
+  p=z
+  
+  ttemp<-proc.time()
+  norm0 = sum(abs(r))
+  if (norm0 == 0) {
+    return(r)
+    stop()
+  }
+  norm= c(norm0)
+  ccount=1
+  it=1
+  converged=FALSE
+  if (verbose && itimes > 0) {
+    #print(paste("setup time: ",(proc.time()-ttemp)[3],sep=""))
+  }
+  while (!converged && it <= imax) {
+    if (verbose && it < itimes){
+      ttemp<-proc.time()
+    }
+    it = it +1
+    alpha = as((t(r)%*%z / (t(p)%*%A%*%p)),"numeric")
+    x = x + t(alpha*t(p))
+    r0 = r
+    r= r - t(alpha*t(A%*%p))
+    norm = append(norm,sum(abs(r)))
+    if (is.nan(norm[it]) ) {
+      print(t(z))
+      stop("ERROR!, norm undefined!")
+    }
+    if (norm[it]/norm0 < tol) {
+      converged = TRUE
+      print(paste("converge in",it-1,"iterations"))
+    } else {
+      if (verbose && it < itimes) {
+        ttemp=proc.time()
+      }
+      z0=z
+      if (norm[it]/norm0 > norm[it-1]/norm0) {
+        cits = max(1,cits-2)        
+        #ccount=1
+      }
+      else {
+        cits = max(ceiling(((nr-cval+1) - cits)/2)+cits,
+                   (nr-cval+1))
+        #ccount=ccount+1
+      }
+      
+      if (Mlen < 3) {
+        z=r
+        z[cval:nr] = hmcgSol(Mlist[2:Mlen],mInds[2:Mlen],
+                             b=array(z[cval:nr],dim=c(nr-cval+1,1)),
+                             x=array(z[cval:nr],dim=c(nr-cval+1,1)),
+                             tol,imax=cits,verbose=FALSE,cWarn=FALSE)
+      }
+      else {
+        z=r
+        z[cval:nr] = cgSol(Mlist[2][cval:nr,cval:nr],b[cval:nr,cval:nr],
+                           x=array(z[cval:nr],dim=c(nr-cval+1,1)),
+                           tol,imax=cits,verbose=FALSE,cWarn=FALSE)
+      }
+      
+      z = (limat)%*%(pmat)%*%r
+      z[cval:nr] = cgSol(cmat[cval:nr,cval:nr]+diag(nr-cval+1)*tol/log(nr-cval+1),
+                         b=array(z[cval:nr],dim=c(nr-cval+1,1)),
+                         x=array(z[cval:nr],dim=c(nr-cval+1,1)),
+                         tol,imax=cits,verbose=FALSE,cWarn=FALSE)
+      z = t(pmat)%*%t(limat)%*%z
+      
+      beta = t(z)%*%(r-r0) / (t(z0)%*%r0)
+      p = z + t(beta * t(p))
+      
+      if(verbose && it < itimes) {
+        print(paste("iteration ",it-1," time: ",(proc.time()-ttemp)[3],sep=""))
+      }
+      
+    }
+  }
+  if (!converged && cWarn) warning("did not converge!")
+  if (verbose) print(paste("iterations: ",it,sep=""))
+  #if (verbose) print(norm/norm0)
+  return(x)
+  
 }
