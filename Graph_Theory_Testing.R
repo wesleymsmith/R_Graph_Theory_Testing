@@ -1147,11 +1147,11 @@ graphDataToConditioners <- function(Gdata) {
   LogN <- floor(log(matN))
   baseMat<- Alap * 0 + Atree
   Adata[,5]<- 0
-  sfac=LogN^2
+  sfac=LogN
   matList[[1]] <- baseMat * sfac
-  for (ii in 1:(2*LogN)){ #need to rework this to only add to empty off tree edges
+  for (ii in 1:(LogN)){ #need to rework this to only add to empty off tree edges
     idSample <- count(sample(x=loffEdges$id,prob=loffEdges$prob,replace=TRUE,
-                           size=LogN^2))
+                           size=LogN^3))
     Adata[,ii+5] <- Adata[,ii+4]
     Adata[idSample$x,ii+5] <- mapply(function(a,b,fac) (a||b)*fac,
                                      Adata[idSample$x,ii+5],idSample$freq,Adata$x[idSample$x])
@@ -1167,7 +1167,7 @@ graphDataToConditioners <- function(Gdata) {
                                           Adata[,ii+5]
     matList[[ii+1]] = tempMat
   }
-  matList[[2*LogN+1]] = baseMat*(sfac - 1) + Alap
+  matList[[LogN+1]] = baseMat*(sfac - 1) + Alap
   pList <- list()
   lList <- list()
   cList <- list()
@@ -1535,7 +1535,7 @@ cmcgSol <- function(Cmat,Ccond,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1
 }
 
 clpcgSol <- function(A,cmat,limat,pmat,cval=1,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1,
-                     cWarn=TRUE) {
+                     cWarn=TRUE,cVerb=FALSE) {
   b =array(data=as(b,"numeric") ,dim=c(length(b),1))
   if (length(x)<1) {
     x=array(data=0,dim=c(length(b),1))
@@ -1624,8 +1624,7 @@ clpcgSol <- function(A,cmat,limat,pmat,cval=1,b,x=c(),tol=1e-6,imax=1000,verbose
   
 }
 
-rccgSol <- function(A,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,f=1,
-                    cDataList) {
+rccgSol <- function(Alist,b,mInds,x=c(),tol=1e-6,imax=1000,verbose=FALSE,cVerb=FALSE) {
   
   #cDataList: list of L and associated C matrices.
   #   If the list is null, then standard CG is run on the
@@ -1636,27 +1635,31 @@ rccgSol <- function(A,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,f=1,
   #   May also contain P (a permutation matrix) which will
   #   be applied if present.
   
-  if (is.null(cDataList)) {
-    #run cg
-  } else {
-    if (is.null(cDataList[[length(cDataList)]]$P)) { 
-      
-    } else {
-      #Apply permutations
-      
-    }
+  t1<-proc.time()
+  Alevel = length(Alist)
+  if (!(Alevel >= 2)) {
+    stop("Error: use standard cg solver for 1 level problems!")
   }
-  
+  Alen = length(diag(Alist[[Alevel]]))
+  cits = Alen-mInds[Alevel-1]+1
+  citsmax = cits
+  A = Alist[[Alevel]]
+
   b = as(array(data=b,dim=c(length(b),1)),"numeric")
   if (length(x)<1) {
     x=as(array(data=0,dim=c(length(b),1)),"numeric")
   } else {
-    x = as(array(data=x,dim(c(length(x),1))),"numeric")
+    x = as(array(data=x,dim=(c(length(x),1))),"numeric")
   }
   
   r = b - A %*% x
   #z = Minv %*% r
-  z = f*t(MP)%*%backsolve(pAtreeR,forwardsolve(t(pAtreeR),MP%*%r))
+  if (Alevel==2) {
+    z = cgSol(Alist[[1]],bvec,x=r,imax=cits,cWarn=FALSE,verbose=cVerb)
+  } else {
+    z = rccgSol(Alist[1:(Alevel-1)],bvec,mInds[1:(Alevel-1)],x=r,imax=cits,verbose=verbose,cVerb=cVerb)
+  }
+
   p=z
   
   norm0 = sum(r^2)
@@ -1673,20 +1676,31 @@ rccgSol <- function(A,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,f=1,
       converged = TRUE
     } else {
       z0=z
-      z = f*t(MP)%*%backsolve(pAtreeR,forwardsolve(t(pAtreeR),MP%*%r))
+      if (!(Alevel > 2)) {
+        z = cgSol(Alist[[1]],b=r,x=p,imax=cits,cWarn=FALSE,verbose=cVerb)
+      } else {
+        z = rccgSol(Alist[1:(Alevel-1)],b=r,mInds[1:(Alevel-1)],x=p,imax=cits,verbose=verbose,cVerb=cVerb)
+      }
       beta = t(z)%*%(r-r0) / (t(z0)%*%r0)
       p = z + t(beta * t(p))
+      if (it > 1) {
+        if (norm[it+1]/norm[it] > 1) {
+          cits = min(citsmax, cits*(norm[it]/norm[it-1])^2) 
+        } else {
+          cits = max(2,cits-1)
+        }
+      }
       it = it + 1
     }
   }
   if (!converged) warning("did not converge!")
-  if (verbose) print(paste("iterations: ",it))
+  if (verbose) print(paste("level: ",Alevel,"iterations: ",it,"time: ",(proc.time()-t1)[["elapsed"]]))
   #if (verbose) print(norm/norm0)
   return(x)
 }
 
 hcmcgSol <- function(Mlist,mInds,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes=1,
-                    cWarn=TRUE) {
+                    cWarn=TRUE,cVerb=TRUE) {
   A = Mlist[[1]]; cmat=Mlist[[2]]; cval=mInds[1]
   b =array(data=as(b,"numeric") ,dim=c(length(b),1))
   if (length(x)<1) {
@@ -1799,4 +1813,85 @@ hcmcgSol <- function(Mlist,mInds,b,x=c(),tol=1e-6,imax=1000,verbose=FALSE,itimes
   #if (verbose) print(norm/norm0)
   return(x)
   
+}
+
+rcscgSol <- function(Alist,b,mInds,
+                     x=c(),tol=1e-6,imax=1000,verbose=FALSE,cVerb=FALSE) {
+  
+  #cDataList: list of L and associated C matrices.
+  #   If the list is null, then standard CG is run on the
+  #   input matrix.
+  #   If C is not a simple diagonal matrix then cutVal
+  #   should also be present to indicate where to cut off
+  #   the elimination backsolve and start next level
+  #   May also contain P (a permutation matrix) which will
+  #   be applied if present.
+  #L1Data: contain Permuation mat MP, inverse of cholesky matrix Li,  
+  
+  t1<-proc.time()
+  Alevel = length(Alist)
+  if (!(Alevel >= 2)) {
+    stop("Error: use standard cg solver for 1 level problems!")
+  }
+  Alen = length(diag(Alist[[Alevel]]))
+  cits = Alen-mInds[Alevel-1]+1
+  citsmax = cits
+  A = Alist[[Alevel]]
+  
+  b = as(array(data=b,dim=c(length(b),1)),"numeric")
+  if (length(x)<1) {
+    x=as(array(data=0,dim=c(length(b),1)),"numeric")
+  } else {
+    x = as(array(data=x,dim=(c(length(x),1))),"numeric")
+  }
+  
+  r = b - A %*% x
+  #z = Minv %*% r
+  if (Alevel==2) {
+    z = solve(Alist[[1]],bvec)
+    nsVec=rep(1,Alen)
+    z = z-nsVec*(nsVec%*%z)[1]/Alen
+  } else {
+    z = rcscgSol(Alist[1:(Alevel-1)],bvec,mInds[1:(Alevel-1)],x=r,imax=cits,verbose=verbose,cVerb=cVerb)
+  }
+  
+  p=z
+  
+  norm0 = sum(r^2)
+  if (norm0 == 0) return(r)
+  norm= c()
+  it=0
+  converged=FALSE
+  while (!converged && it <= imax) {
+    alpha = t(r)%*%z / (t(p)%*%A%*%p)
+    x = x + t(alpha*t(p))
+    r0 = r
+    r= r - t(alpha*t(A%*%p))
+    norm = append(norm,sum(r^2))
+    if (norm[it+1]/norm0 < tol) {
+      converged = TRUE
+    } else {
+      z0=z
+      if (!(Alevel > 2)) {
+        z = solve(Alist[[1]],b=r)
+        z = z-nsVec*(nsVec%*%z)[1]/Alen
+      } else {
+        z = rcscgSol(Alist[1:(Alevel-1)],b=r,mInds[1:(Alevel-1)],x=p,imax=cits,verbose=verbose,cVerb=cVerb)
+      }
+      beta = t(z)%*%(r-r0) / (t(z0)%*%r0)
+      p = z + t(beta * t(p))
+      if (it > 1) {
+        if (norm[it+1]/norm[it] > 1) {
+          cits = min(citsmax, cits*(norm[it]/norm[it-1])^2) 
+        } else {
+          cits = max(2,cits-1)
+        }
+      }
+      it = it + 1
+    }
+  }
+  if (!converged) warning("did not converge!")
+  if (verbose) print(paste("level: ",Alevel,"iterations: ",it,"time: ",(proc.time()-t1)[["elapsed"]]))
+  #if (verbose) print(norm/norm0)
+  return(x)
 }
