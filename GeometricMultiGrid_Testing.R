@@ -277,6 +277,24 @@ oneLevel2Dinterp <- function(lvec,lgeo,ldim,lpvec,lpgeo,lpdim) {
 }
 
 oneLevel3Dinterp <- function(lvec,lgeo,ldim,lpvec,lpgeo,lpdim,periodic=TRUE) {
+  lgvol = ldim[1]*ldim[2]*ldim[3]; lpgvol=lpdim[1]*lpdim[2]*lpdim[3]
+  #interpi - indices of coarse grid entries in the matrix
+  #interpj - indices of fine grid entries in the matrix
+  gridFrame = data.frame(id=c(1:lgvol),xi=lvec[,1],yi=lvec[,2],zi=lvec[,3],
+                         pv=(lvec[,1]%%2 + lvec[,2]%%2 + lvec[,3]%%2),
+                         ev=((lvec[,1]%%ldim[1]<2)+(lvec[,2]%%ldim[2]<2)+
+                               (lvec[,3]%%ldim[3]<2)))
+  for(di in c(-1,1)) {
+    for (dj in c(-1,1)) {
+      for (dk in c(-1,1)) {
+        parity = sum(abs(di)+abs(dj)+abs(dk))
+        factor = 1 / (2*parity)
+        interpi = 
+        interpj = 
+        
+      }
+    }
+  }
   
 }
 
